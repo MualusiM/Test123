@@ -1,14 +1,15 @@
 # Psychrometric Chart Lab
 
-A desktop psychrometric chart app built with PyQt and Matplotlib. It plots the
-classic HVAC chart families, lets you add state points, and computes live moist
-air properties as you explore.
+A desktop psychrometric chart app built with PyQt, Matplotlib, and PsychroLib.
+It plots the classic HVAC chart families, lets you add state points, and computes
+live moist air properties as you explore.
 
 ## Features
 
 - Saturation boundary and relative humidity curves
 - Enthalpy, wet-bulb, and specific-volume guide lines
 - Altitude-adjusted standard atmospheric pressure
+- PsychroLib-backed SI psychrometric calculations
 - Comfort-zone overlay
 - Add, update, remove, and annotate state points
 - Process arrows between consecutive points

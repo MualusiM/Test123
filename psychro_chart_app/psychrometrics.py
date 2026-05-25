@@ -1,8 +1,8 @@
 """Psychrometric relationships for moist air in SI units.
 
-The equations here intentionally avoid GUI dependencies so the numerical layer
-can be tested independently of Qt. Values are suitable for visualization and
-engineering exploration across ordinary HVAC temperature ranges.
+This module wraps PsychroLib so the GUI has a small, stable API while relying
+on a standard psychrometric implementation for the underlying HVAC properties.
+Values are returned in SI units unless a function name states otherwise.
 """
 
 from __future__ import annotations
@@ -10,35 +10,39 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
+from psychrolib import (
+    GetHumRatioFromRelHum,
+    GetHumRatioFromTWetBulb,
+    GetMoistAirEnthalpy,
+    GetMoistAirVolume,
+    GetRelHumFromHumRatio,
+    GetSatHumRatio,
+    GetSatVapPres,
+    GetStandardAtmPressure,
+    GetTDewPointFromHumRatio,
+    GetTWetBulbFromHumRatio,
+    GetVapPresFromHumRatio,
+    SI,
+    SetUnitSystem,
+)
+
 EPSILON = 0.621945
 R_DA = 287.055
 SEA_LEVEL_PRESSURE_PA = 101_325.0
 
+SetUnitSystem(SI)
+
 
 def standard_atmospheric_pressure_pa(altitude_m: float) -> float:
-    """Return standard atmospheric pressure in Pa for a geometric altitude."""
+    """Return PsychroLib standard atmospheric pressure in Pa."""
 
-    # International Standard Atmosphere, troposphere. Clamp just below the
-    # singularity so an adventurous UI slider still returns a meaningful value.
-    altitude_m = min(float(altitude_m), 44_000.0)
-    base = max(1.0 - 2.25577e-5 * altitude_m, 1.0e-6)
-    return SEA_LEVEL_PRESSURE_PA * base**5.2559
+    return float(GetStandardAtmPressure(float(altitude_m)))
 
 
 def saturation_vapor_pressure_pa(temperature_c: float) -> float:
-    """Buck saturation vapor pressure over water/ice in Pa."""
+    """Return PsychroLib saturation vapor pressure in Pa."""
 
-    temperature_c = float(temperature_c)
-    if temperature_c >= 0.0:
-        exponent = (18.678 - temperature_c / 234.5) * (
-            temperature_c / (257.14 + temperature_c)
-        )
-        return 611.21 * math.exp(exponent)
-
-    exponent = (23.036 - temperature_c / 333.7) * (
-        temperature_c / (279.82 + temperature_c)
-    )
-    return 611.15 * math.exp(exponent)
+    return float(GetSatVapPres(float(temperature_c)))
 
 
 def saturation_humidity_ratio_kg_per_kg(
@@ -46,10 +50,10 @@ def saturation_humidity_ratio_kg_per_kg(
 ) -> float:
     """Return saturation humidity ratio in kg water / kg dry air."""
 
-    p_ws = saturation_vapor_pressure_pa(temperature_c)
-    if p_ws >= pressure_pa:
+    try:
+        return float(GetSatHumRatio(float(temperature_c), float(pressure_pa)))
+    except ValueError:
         return math.inf
-    return EPSILON * p_ws / (pressure_pa - p_ws)
 
 
 def humidity_ratio_from_rh(
@@ -60,10 +64,7 @@ def humidity_ratio_from_rh(
     """Return humidity ratio from dry-bulb temperature and RH fraction."""
 
     rh = min(max(float(relative_humidity), 0.0), 1.0)
-    p_v = rh * saturation_vapor_pressure_pa(temperature_c)
-    if p_v >= pressure_pa:
-        return math.inf
-    return EPSILON * p_v / (pressure_pa - p_v)
+    return float(GetHumRatioFromRelHum(float(temperature_c), rh, float(pressure_pa)))
 
 
 def vapor_pressure_from_humidity_ratio(
@@ -71,8 +72,11 @@ def vapor_pressure_from_humidity_ratio(
 ) -> float:
     """Return water vapor partial pressure in Pa."""
 
-    w = max(float(humidity_ratio), 0.0)
-    return pressure_pa * w / (EPSILON + w)
+    return float(
+        GetVapPresFromHumRatio(
+            max(float(humidity_ratio), 0.0), float(pressure_pa)
+        )
+    )
 
 
 def relative_humidity_from_humidity_ratio(
@@ -82,12 +86,15 @@ def relative_humidity_from_humidity_ratio(
 ) -> float:
     """Return relative humidity as a fraction for a dry-bulb/W state."""
 
-    p_v = vapor_pressure_from_humidity_ratio(humidity_ratio, pressure_pa)
-    return p_v / saturation_vapor_pressure_pa(temperature_c)
+    return float(
+        GetRelHumFromHumRatio(
+            float(temperature_c), max(float(humidity_ratio), 0.0), float(pressure_pa)
+        )
+    )
 
 
 def dew_point_c_from_vapor_pressure(vapor_pressure_pa: float) -> float:
-    """Invert saturation pressure to dew-point temperature with bisection."""
+    """Invert PsychroLib saturation pressure to dew-point temperature."""
 
     vapor_pressure_pa = max(float(vapor_pressure_pa), 1.0)
     low = -100.0
@@ -106,10 +113,12 @@ def dew_point_c(
     relative_humidity: float,
     pressure_pa: float = SEA_LEVEL_PRESSURE_PA,
 ) -> float:
-    """Return dew point in degrees C for a dry-bulb/RH state."""
+    """Return PsychroLib dew point in degrees C for a dry-bulb/RH state."""
 
     w = humidity_ratio_from_rh(temperature_c, relative_humidity, pressure_pa)
-    return dew_point_c_from_humidity_ratio(w, pressure_pa)
+    return float(
+        GetTDewPointFromHumRatio(float(temperature_c), w, float(pressure_pa))
+    )
 
 
 def dew_point_c_from_humidity_ratio(
@@ -123,9 +132,16 @@ def dew_point_c_from_humidity_ratio(
 
 
 def enthalpy_kj_per_kg_da(temperature_c: float, humidity_ratio: float) -> float:
-    """Moist air enthalpy in kJ / kg dry air."""
+    """PsychroLib moist air enthalpy in kJ / kg dry air."""
 
-    return 1.006 * temperature_c + humidity_ratio * (2501.0 + 1.86 * temperature_c)
+    return (
+        float(
+            GetMoistAirEnthalpy(
+                float(temperature_c), max(float(humidity_ratio), 0.0)
+            )
+        )
+        / 1000.0
+    )
 
 
 def humidity_ratio_from_enthalpy(
@@ -133,8 +149,12 @@ def humidity_ratio_from_enthalpy(
 ) -> float:
     """Return humidity ratio for a dry-bulb temperature and enthalpy."""
 
-    return (enthalpy_kj_per_kg_da_value - 1.006 * temperature_c) / (
-        2501.0 + 1.86 * temperature_c
+    # PsychroLib exposes enthalpy from W, but not the inverse needed for chart
+    # guide lines. This is the algebraic inverse of PsychroLib's SI formula.
+    return max(
+        (float(enthalpy_kj_per_kg_da_value) * 1000.0 - 1006.0 * float(temperature_c))
+        / (2_501_000.0 + 1860.0 * float(temperature_c)),
+        0.0,
     )
 
 
@@ -143,10 +163,13 @@ def specific_volume_m3_per_kg_da(
     humidity_ratio: float,
     pressure_pa: float = SEA_LEVEL_PRESSURE_PA,
 ) -> float:
-    """Specific volume of moist air in m3 / kg dry air."""
+    """PsychroLib specific volume of moist air in m3 / kg dry air."""
 
-    temperature_k = temperature_c + 273.15
-    return R_DA * temperature_k * (1.0 + 1.607858 * humidity_ratio) / pressure_pa
+    return float(
+        GetMoistAirVolume(
+            float(temperature_c), max(float(humidity_ratio), 0.0), float(pressure_pa)
+        )
+    )
 
 
 def humidity_ratio_from_specific_volume(
@@ -156,9 +179,10 @@ def humidity_ratio_from_specific_volume(
 ) -> float:
     """Return humidity ratio for a dry-bulb temperature and specific volume."""
 
-    temperature_k = temperature_c + 273.15
-    numerator = specific_volume_m3_per_kg_da_value * pressure_pa
-    return (numerator / (R_DA * temperature_k) - 1.0) / 1.607858
+    # Inverse of PsychroLib's moist-air specific-volume relationship.
+    temperature_k = float(temperature_c) + 273.15
+    numerator = float(specific_volume_m3_per_kg_da_value) * float(pressure_pa)
+    return max((numerator / (R_DA * temperature_k) - 1.0) / 1.607858, 0.0)
 
 
 def humidity_ratio_from_wet_bulb(
@@ -166,15 +190,13 @@ def humidity_ratio_from_wet_bulb(
     wet_bulb_c: float,
     pressure_pa: float = SEA_LEVEL_PRESSURE_PA,
 ) -> float:
-    """Approximate humidity ratio from dry-bulb and thermodynamic wet bulb."""
+    """Return PsychroLib humidity ratio from dry-bulb and wet-bulb."""
 
     dry_bulb_c = float(dry_bulb_c)
     wet_bulb_c = min(float(wet_bulb_c), dry_bulb_c)
-    w_s_wb = saturation_humidity_ratio_kg_per_kg(wet_bulb_c, pressure_pa)
-    numerator = (2501.0 - 2.326 * wet_bulb_c) * w_s_wb
-    numerator -= 1.006 * (dry_bulb_c - wet_bulb_c)
-    denominator = 2501.0 + 1.86 * dry_bulb_c - 4.186 * wet_bulb_c
-    return max(numerator / denominator, 0.0)
+    return float(
+        GetHumRatioFromTWetBulb(dry_bulb_c, wet_bulb_c, float(pressure_pa))
+    )
 
 
 def wet_bulb_c_from_state(
@@ -182,21 +204,13 @@ def wet_bulb_c_from_state(
     humidity_ratio: float,
     pressure_pa: float = SEA_LEVEL_PRESSURE_PA,
 ) -> float:
-    """Solve approximate wet-bulb temperature from dry-bulb/W state."""
+    """Return PsychroLib wet-bulb temperature from dry-bulb/W state."""
 
-    dew_point = dew_point_c_from_humidity_ratio(humidity_ratio, pressure_pa)
-    low = min(dew_point, dry_bulb_c)
-    high = dry_bulb_c
-    target_w = max(float(humidity_ratio), 0.0)
-
-    for _ in range(70):
-        mid = (low + high) / 2.0
-        candidate_w = humidity_ratio_from_wet_bulb(dry_bulb_c, mid, pressure_pa)
-        if candidate_w < target_w:
-            low = mid
-        else:
-            high = mid
-    return (low + high) / 2.0
+    return float(
+        GetTWetBulbFromHumRatio(
+            float(dry_bulb_c), max(float(humidity_ratio), 0.0), float(pressure_pa)
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -219,7 +233,11 @@ class PsychrometricState:
 
     @property
     def dew_point_c(self) -> float:
-        return dew_point_c_from_humidity_ratio(self.humidity_ratio, self.pressure_pa)
+        return float(
+            GetTDewPointFromHumRatio(
+                float(self.dry_bulb_c), self.humidity_ratio, float(self.pressure_pa)
+            )
+        )
 
     @property
     def wet_bulb_c(self) -> float:
