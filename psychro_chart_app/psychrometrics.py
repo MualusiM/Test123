@@ -260,6 +260,104 @@ class PsychrometricState:
         return vapor_pressure_from_humidity_ratio(self.humidity_ratio, self.pressure_pa)
 
 
+def process_line_humidity_ratio(
+    temperature_c: float, start: PsychrometricState, end: PsychrometricState
+) -> float | None:
+    """Return humidity ratio on the straight process line at a temperature."""
+
+    delta_t = end.dry_bulb_c - start.dry_bulb_c
+    if abs(delta_t) < 1.0e-9:
+        return None
+    slope = (end.humidity_ratio - start.humidity_ratio) / delta_t
+    return start.humidity_ratio + slope * (float(temperature_c) - start.dry_bulb_c)
+
+
+def apparatus_dew_point_c(
+    start: PsychrometricState,
+    end: PsychrometricState,
+    *,
+    low_temperature_c: float = -80.0,
+    high_temperature_c: float | None = None,
+) -> float | None:
+    """Return the ADP where the process line intersects saturation.
+
+    The apparatus dew point is found by extending the straight line through the
+    entering and leaving states until it crosses the PsychroLib saturation
+    curve. The root nearest the leaving state is returned, which matches the
+    common coil-analysis use case.
+    """
+
+    if abs(end.dry_bulb_c - start.dry_bulb_c) < 1.0e-9:
+        return None
+
+    pressure_pa = end.pressure_pa
+    high = (
+        max(start.dry_bulb_c, end.dry_bulb_c) + 10.0
+        if high_temperature_c is None
+        else float(high_temperature_c)
+    )
+    low = min(float(low_temperature_c), min(start.dry_bulb_c, end.dry_bulb_c) - 30.0)
+
+    def residual(temperature_c: float) -> float | None:
+        line_w = process_line_humidity_ratio(temperature_c, start, end)
+        if line_w is None or line_w < 0.0:
+            return None
+        saturation_w = saturation_humidity_ratio_kg_per_kg(temperature_c, pressure_pa)
+        if not math.isfinite(saturation_w):
+            return None
+        return line_w - saturation_w
+
+    roots: list[float] = []
+    sample_count = 1200
+    previous_t: float | None = None
+    previous_value: float | None = None
+
+    for index in range(sample_count + 1):
+        temperature = low + (high - low) * index / sample_count
+        value = residual(temperature)
+        if value is None:
+            continue
+        if abs(value) < 1.0e-8:
+            roots.append(temperature)
+        elif previous_value is not None and previous_t is not None:
+            if value * previous_value < 0.0:
+                left = previous_t
+                right = temperature
+                left_value = previous_value
+                for _ in range(80):
+                    middle = (left + right) / 2.0
+                    middle_value = residual(middle)
+                    if middle_value is None:
+                        break
+                    if abs(middle_value) < 1.0e-10:
+                        left = right = middle
+                        break
+                    if left_value * middle_value <= 0.0:
+                        right = middle
+                    else:
+                        left = middle
+                        left_value = middle_value
+                roots.append((left + right) / 2.0)
+        previous_t = temperature
+        previous_value = value
+
+    if not roots:
+        return None
+
+    return min(roots, key=lambda root: abs(root - end.dry_bulb_c))
+
+
+def coil_bypass_factor(
+    start: PsychrometricState, end: PsychrometricState, adp_c: float
+) -> float | None:
+    """Return temperature-based coil bypass factor from entering/leaving/ADP."""
+
+    denominator = start.dry_bulb_c - adp_c
+    if abs(denominator) < 1.0e-9:
+        return None
+    return (end.dry_bulb_c - adp_c) / denominator
+
+
 def sensible_heat_ratio(
     start: PsychrometricState, end: PsychrometricState
 ) -> float | None:

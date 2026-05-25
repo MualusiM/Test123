@@ -13,6 +13,7 @@ live moist air properties as you explore.
 - Comfort-zone overlay
 - Add, update, remove, and annotate state points
 - Process arrows between consecutive points
+- Apparatus dew point (ADP), sensible heat ratio (SHR), and bypass factor reporting
 - Live table for humidity ratio, enthalpy, dew point, wet bulb, and specific volume
 - Cursor readout for dry bulb, humidity ratio, RH, and enthalpy
 - PNG/SVG/PDF export from the running app

@@ -4,9 +4,13 @@ import psychrolib
 
 from psychro_chart_app.psychrometrics import (
     PsychrometricState,
+    apparatus_dew_point_c,
+    coil_bypass_factor,
     enthalpy_kj_per_kg_da,
     humidity_ratio_from_rh,
+    process_line_humidity_ratio,
     relative_humidity_from_humidity_ratio,
+    saturation_humidity_ratio_kg_per_kg,
     saturation_vapor_pressure_pa,
     standard_atmospheric_pressure_pa,
     wet_bulb_c_from_state,
@@ -58,6 +62,35 @@ class PsychrometricFormulaTests(unittest.TestCase):
         self.assertLess(state.dew_point_c, 14.5)
         self.assertGreater(state.enthalpy_kj_per_kg_da, 45.0)
         self.assertLess(state.enthalpy_kj_per_kg_da, 50.0)
+
+
+    def test_process_line_humidity_ratio_interpolates_between_states(self):
+        start = PsychrometricState(30.0, 0.50)
+        end = PsychrometricState(20.0, 0.70)
+        midpoint = process_line_humidity_ratio(25.0, start, end)
+        expected = (start.humidity_ratio + end.humidity_ratio) / 2.0
+        self.assertAlmostEqual(midpoint, expected, delta=1.0e-12)
+
+    def test_apparatus_dew_point_and_bypass_factor(self):
+        pressure = standard_atmospheric_pressure_pa(0)
+        start = PsychrometricState(30.0, 0.50, pressure)
+        adp_c = 10.0
+        bypass_factor = 0.25
+        adp_w = saturation_humidity_ratio_kg_per_kg(adp_c, pressure)
+        end_t = adp_c + bypass_factor * (start.dry_bulb_c - adp_c)
+        end_w = adp_w + bypass_factor * (start.humidity_ratio - adp_w)
+        end_rh = relative_humidity_from_humidity_ratio(end_t, end_w, pressure)
+        end = PsychrometricState(end_t, end_rh, pressure)
+
+        calculated_adp = apparatus_dew_point_c(start, end)
+
+        self.assertIsNotNone(calculated_adp)
+        self.assertAlmostEqual(calculated_adp, adp_c, places=4)
+        self.assertAlmostEqual(
+            coil_bypass_factor(start, end, calculated_adp),
+            bypass_factor,
+            places=4,
+        )
 
     def test_wet_bulb_is_between_dew_point_and_dry_bulb(self):
         state = PsychrometricState(30.0, 0.45)

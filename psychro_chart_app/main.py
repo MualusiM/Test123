@@ -37,6 +37,8 @@ from PyQt6.QtWidgets import (
 
 from .psychrometrics import (
     PsychrometricState,
+    apparatus_dew_point_c,
+    coil_bypass_factor,
     enthalpy_kj_per_kg_da,
     humidity_ratio_from_enthalpy,
     humidity_ratio_from_rh,
@@ -86,6 +88,7 @@ class PsychroChartCanvas(FigureCanvas):
         self.show_specific_volume = True
         self.show_comfort_zone = True
         self.show_process = True
+        self.show_adp_shr = True
 
     def update_config(
         self,
@@ -101,6 +104,7 @@ class PsychroChartCanvas(FigureCanvas):
         show_specific_volume: bool,
         show_comfort_zone: bool,
         show_process: bool,
+        show_adp_shr: bool,
     ) -> None:
         self.points = list(points)
         self.temperature_min_c = float(temperature_min_c)
@@ -113,6 +117,7 @@ class PsychroChartCanvas(FigureCanvas):
         self.show_specific_volume = show_specific_volume
         self.show_comfort_zone = show_comfort_zone
         self.show_process = show_process
+        self.show_adp_shr = show_adp_shr
         self.draw_chart()
 
     def draw_chart(self) -> None:
@@ -157,6 +162,8 @@ class PsychroChartCanvas(FigureCanvas):
             self._draw_specific_volume_lines(ax, t_values)
         if self.show_comfort_zone:
             self._draw_comfort_zone(ax)
+        if self.show_adp_shr:
+            self._draw_process_analysis(ax)
 
         self._draw_state_points(ax)
 
@@ -371,6 +378,98 @@ class PsychroChartCanvas(FigureCanvas):
                 alpha=0.8,
             )
 
+    def _draw_process_analysis(self, ax) -> None:
+        if len(self.points) < 2:
+            return
+
+        adp_label_used = False
+        shr_label_used = False
+        for start, end in zip(self.points, self.points[1:]):
+            start_state = start.state(self.pressure_pa)
+            end_state = end.state(self.pressure_pa)
+            start_w = start_state.humidity_ratio_g_per_kg
+            end_w = end_state.humidity_ratio_g_per_kg
+            shr = sensible_heat_ratio(start_state, end_state)
+
+            if shr is not None:
+                mid_t = (start.dry_bulb_c + end.dry_bulb_c) / 2.0
+                mid_w = (start_w + end_w) / 2.0
+                if (
+                    self.temperature_min_c <= mid_t <= self.temperature_max_c
+                    and 0.0 <= mid_w <= self.max_humidity_g_per_kg
+                ):
+                    ax.text(
+                        mid_t,
+                        mid_w,
+                        f"SHR {shr:.2f}",
+                        color="#8a1c7c",
+                        fontsize=8,
+                        fontweight="bold",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "fc": "white",
+                            "ec": "#8a1c7c",
+                            "alpha": 0.75,
+                        },
+                        zorder=6,
+                    )
+
+            adp_c = apparatus_dew_point_c(start_state, end_state)
+            if adp_c is None:
+                continue
+
+            adp_w = (
+                saturation_humidity_ratio_kg_per_kg(adp_c, self.pressure_pa)
+                * 1000.0
+            )
+            if not np.isfinite(adp_w):
+                continue
+
+            ax.plot(
+                [end.dry_bulb_c, adp_c],
+                [end_w, adp_w],
+                color="#c2185b",
+                linewidth=1.2,
+                linestyle=(0, (4, 3)),
+                alpha=0.74,
+                label="ADP extension" if not adp_label_used else None,
+                zorder=5,
+            )
+            adp_label_used = True
+
+            if (
+                self.temperature_min_c <= adp_c <= self.temperature_max_c
+                and 0.0 <= adp_w <= self.max_humidity_g_per_kg
+            ):
+                ax.scatter(
+                    [adp_c],
+                    [adp_w],
+                    marker="*",
+                    s=145,
+                    color="#c2185b",
+                    edgecolor="white",
+                    linewidth=1.0,
+                    label="ADP" if not shr_label_used else None,
+                    zorder=7,
+                )
+                shr_label_used = True
+                ax.annotate(
+                    f"ADP {adp_c:.1f} C",
+                    xy=(adp_c, adp_w),
+                    xytext=(8, -18),
+                    textcoords="offset points",
+                    color="#9b1749",
+                    fontsize=8,
+                    fontweight="bold",
+                    bbox={
+                        "boxstyle": "round,pad=0.2",
+                        "fc": "white",
+                        "ec": "#c2185b",
+                        "alpha": 0.82,
+                    },
+                    zorder=8,
+                )
+
     def _draw_state_points(self, ax) -> None:
         previous: tuple[float, float] | None = None
         for point in self.points:
@@ -563,6 +662,7 @@ class MainWindow(QMainWindow):
         self.volume_check = self._make_check("Specific volume", True)
         self.comfort_check = self._make_check("Comfort band", True)
         self.process_check = self._make_check("Process arrows", True)
+        self.adp_shr_check = self._make_check("ADP + SHR", True)
 
         checks = [
             self.rh_check,
@@ -571,6 +671,7 @@ class MainWindow(QMainWindow):
             self.volume_check,
             self.comfort_check,
             self.process_check,
+            self.adp_shr_check,
         ]
         for index, check in enumerate(checks):
             check.stateChanged.connect(self._sync_all)
@@ -690,6 +791,7 @@ class MainWindow(QMainWindow):
             show_specific_volume=self.volume_check.isChecked(),
             show_comfort_zone=self.comfort_check.isChecked(),
             show_process=self.process_check.isChecked(),
+            show_adp_shr=self.adp_shr_check.isChecked(),
         )
         self._refresh_table()
         self._refresh_report()
@@ -811,9 +913,27 @@ class MainWindow(QMainWindow):
             delta_t = end_state.dry_bulb_c - start_state.dry_bulb_c
             shr = sensible_heat_ratio(start_state, end_state)
             shr_text = "n/a" if shr is None else f"{shr:.2f}"
+            adp_c = apparatus_dew_point_c(start_state, end_state)
+            if adp_c is None:
+                adp_text = "ADP n/a"
+                bypass_text = "BF n/a"
+            else:
+                adp_w = (
+                    saturation_humidity_ratio_kg_per_kg(adp_c, pressure) * 1000.0
+                )
+                bypass_factor = coil_bypass_factor(start_state, end_state, adp_c)
+                bypass_text = (
+                    "BF n/a"
+                    if bypass_factor is None
+                    else f"BF {bypass_factor:.2f}"
+                )
+                adp_text = f"ADP {adp_c:.1f} C / {adp_w:.2f} g/kg"
             mode = self._classify_process(delta_t, delta_w)
             lines.append(
-                f"   {start.label} -> {end.label}: {mode}; dT {delta_t:+.1f} C, dW {delta_w:+.2f} g/kg, dh {delta_h:+.1f} kJ/kg_da, SHR {shr_text}"
+                f"   {start.label} -> {end.label}: {mode}; "
+                f"dT {delta_t:+.1f} C, dW {delta_w:+.2f} g/kg, "
+                f"dh {delta_h:+.1f} kJ/kg_da, SHR {shr_text}, "
+                f"{adp_text}, {bypass_text}"
             )
 
         self.report.setPlainText("\n".join(lines))
